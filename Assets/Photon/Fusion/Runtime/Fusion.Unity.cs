@@ -964,6 +964,7 @@ namespace Fusion {
           }
         }
         _builder.Append(message);
+        
         fullMessage = _builder.ToString();
       } finally {
         _builder.Clear();
