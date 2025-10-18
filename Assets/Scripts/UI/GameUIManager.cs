@@ -1,305 +1,295 @@
 using UnityEngine;
-using Fusion;
-using GNW2.Events;
 using UnityEngine.UI;
+using TMPro;
+using System.IO;
+using GNW2.Events;
+using GNW2.GameManager;
+using System;
+using System.Collections.Generic;
 
 namespace GNW2.UI
 {
-    /// <summary>
-    /// Centralized UI manager that listens to game events and updates UI accordingly.
-    /// This decouples UI from game logic by using the event bus pattern.
-    /// </summary>
+    [Serializable]
+    public class PlayerData
+    {
+        public string username;
+        public string password;
+        public string email;
+        public int score;
+        public int wins;
+    }
+
     public class GameUIManager : MonoBehaviour
     {
-        [Header("Selection UI")]
-        [SerializeField] private GameObject selectionUI;
-        [SerializeField] private Button rockButton;
-        [SerializeField] private Button paperButton;
-        [SerializeField] private Button scissorButton;
+        public static GameUIManager Instance;
 
-        [Header("Result UI")]
-        [SerializeField] private GameObject winUI;
-        [SerializeField] private GameObject loseUI;
-        [SerializeField] private GameObject drawUI;
+        [Header("Panels")]
+        public GameObject loginPanel;
+        public GameObject registerPanel;
+        public GameObject selectionPanel;
+        public GameObject winPanel;
+        public GameObject losePanel;
+        public GameObject drawPanel;
+        public GameObject opponentNamePanel;
 
-        [Header("Game Info UI")]
-        [SerializeField] private TMPro.TextMeshProUGUI roundNumberText;
-        [SerializeField] private TMPro.TextMeshProUGUI playerCountText;
+        [Header("Login Fields")]
+        public TMP_InputField loginUsernameInput;
+        public TMP_InputField loginPasswordInput;
 
-        [Header("Root UI Container")]
-        [SerializeField] private GameObject gameUIRoot;
+        [Header("Register Fields")]
+        public TMP_InputField regUsernameInput;
+        public TMP_InputField regPasswordInput;
+        public TMP_InputField regRepeatPasswordInput;
+        public TMP_InputField regEmailInput;
 
-        private bool isConnectedToNetwork = false;
+        [Header("Buttons")]
+        public Button registerButton;
+
+        [Header("Player List UI")]
+        public TMP_Text allPlayersText;
+
+        [Header("Text")]
+        public TMP_Text feedbackText;
+        public TMP_Text opponentNameText;
+
+        private GameHandler gameHandler;
+        private string UserData;
+        private PlayerData currentPlayer;
+
+        private void Awake()
+        {
+            if (Instance == null)
+                Instance = this;
+            else
+            {
+                Destroy(gameObject);
+                return;
+            }
+
+            // Set up UserData folder
+            UserData = Path.Combine(Application.dataPath, "UserData");
+            if (!Directory.Exists(UserData))
+                Directory.CreateDirectory(UserData);
+
+            HideAllPanels();
+            loginPanel.SetActive(true);
+        }
 
         private void Start()
         {
-            // Hide all game UI until connected to network
-            HideAllGameUI();
+            gameHandler = FindFirstObjectByType<GameHandler>();
+            EventBus.Subscribe<PlayerMadeSelectionEvent>(OnPlayerMadeSelection);
+            EventBus.Subscribe<RoundEndedEvent>(OnRoundEnded);
+
+            if (registerButton != null)
+                registerButton.onClick.AddListener(OnClick_RegisterButton);
+
+            // Automatically wire up confirm register button
+            Button confirmButton = GameObject.Find("ConfirmRegisterButton")?.GetComponent<Button>();
+            if (confirmButton != null)
+                confirmButton.onClick.AddListener(RegisterAccount);
+
+            Button loginButton = GameObject.Find("LoginButton")?.GetComponent<Button>();
+            if (loginButton != null)
+                loginButton.onClick.AddListener(LoginAccount);
+            else
+                Debug.LogWarning("[GameUIManager] LoginButton not found in scene!");
         }
 
-        private void OnEnable()
+        private void HideAllPanels()
         {
-            // Subscribe to all relevant UI events
-            EventBus.Subscribe<ShowSelectionUIEvent>(OnShowSelectionUI);
-            EventBus.Subscribe<HideSelectionUIEvent>(OnHideSelectionUI);
-            EventBus.Subscribe<ShowResultUIEvent>(OnShowResultUI);
-            EventBus.Subscribe<HideResultUIEvent>(OnHideResultUI);
-            EventBus.Subscribe<RoundStartedEvent>(OnRoundStarted);
-            EventBus.Subscribe<GameStartedEvent>(OnGameStarted);
-            EventBus.Subscribe<PlayerJoinedEvent>(OnPlayerJoined);
-            EventBus.Subscribe<PlayerLeftEvent>(OnPlayerLeft);
-            EventBus.Subscribe<NetworkConnectedEvent>(OnNetworkConnected);
-            EventBus.Subscribe<NetworkDisconnectedEvent>(OnNetworkDisconnected);
-
-            // Setup button listeners
-            if (rockButton != null)
-                rockButton.onClick.AddListener(() => OnSelectionButtonClicked(0));
-            if (paperButton != null)
-                paperButton.onClick.AddListener(() => OnSelectionButtonClicked(1));
-            if (scissorButton != null)
-                scissorButton.onClick.AddListener(() => OnSelectionButtonClicked(2));
+            loginPanel.SetActive(false);
+            registerPanel.SetActive(false);
+            selectionPanel.SetActive(false);
+            winPanel.SetActive(false);
+            losePanel.SetActive(false);
+            drawPanel.SetActive(false);
+            opponentNamePanel.SetActive(false);
         }
 
-        private void OnDisable()
-        {
-            // Always unsubscribe when disabled to prevent memory leaks
-            EventBus.Unsubscribe<ShowSelectionUIEvent>(OnShowSelectionUI);
-            EventBus.Unsubscribe<HideSelectionUIEvent>(OnHideSelectionUI);
-            EventBus.Unsubscribe<ShowResultUIEvent>(OnShowResultUI);
-            EventBus.Unsubscribe<HideResultUIEvent>(OnHideResultUI);
-            EventBus.Unsubscribe<RoundStartedEvent>(OnRoundStarted);
-            EventBus.Unsubscribe<GameStartedEvent>(OnGameStarted);
-            EventBus.Unsubscribe<PlayerJoinedEvent>(OnPlayerJoined);
-            EventBus.Unsubscribe<PlayerLeftEvent>(OnPlayerLeft);
-            EventBus.Unsubscribe<NetworkConnectedEvent>(OnNetworkConnected);
-            EventBus.Unsubscribe<NetworkDisconnectedEvent>(OnNetworkDisconnected);
+        // ============================
+        // LOGIN & REGISTRATION LOGIC
+        // ============================
 
-            // Remove button listeners
-            if (rockButton != null)
-                rockButton.onClick.RemoveAllListeners();
-            if (paperButton != null)
-                paperButton.onClick.RemoveAllListeners();
-            if (scissorButton != null)
-                scissorButton.onClick.RemoveAllListeners();
+        public void OnClick_RegisterButton()
+        {
+            loginPanel.SetActive(false);
+            registerPanel.SetActive(true);
+            feedbackText.text = "";
         }
 
-        /// <summary>
-        /// Called when connected to network - enables game UI
-        /// </summary>
-        private void OnNetworkConnected(NetworkConnectedEvent evt)
+        public void OnClick_BackToLogin()
         {
-            isConnectedToNetwork = true;
-            ShowAllGameUI();
-            Debug.Log($"[UI] Network connected as {(evt.IsHost ? "Host" : "Client")} - Game UI enabled");
+            registerPanel.SetActive(false);
+            loginPanel.SetActive(true);
+            feedbackText.text = "";
         }
 
-        /// <summary>
-        /// Called when disconnected from network - disables game UI
-        /// </summary>
-        private void OnNetworkDisconnected(NetworkDisconnectedEvent evt)
+        public void RegisterAccount()
         {
-            isConnectedToNetwork = false;
-            HideAllGameUI();
-            Debug.Log("[UI] Network disconnected - Game UI disabled");
-        }
+            string user = regUsernameInput.text.Trim();
+            string pass = regPasswordInput.text.Trim();
+            string repass = regRepeatPasswordInput.text.Trim();
+            string email = regEmailInput.text.Trim();
 
-        /// <summary>
-        /// Shows the rock-paper-scissors selection UI when a round starts
-        /// Only shows UI for the local player
-        /// </summary>
-        private void OnShowSelectionUI(ShowSelectionUIEvent evt)
-        {
-            if (!isConnectedToNetwork) return;
-
-            // Only show UI if this is for the local player
-            var runner = NetworkRunner.GetRunnerForGameObject(gameObject);
-            if (runner == null || evt.TargetPlayer != runner.LocalPlayer)
-                return;
-
-            if (selectionUI != null)
+            if (string.IsNullOrEmpty(user) || string.IsNullOrEmpty(pass) || string.IsNullOrEmpty(email))
             {
-                selectionUI.SetActive(true);
-                Debug.Log("[UI] Showing selection UI for local player");
+                feedbackText.text = "Please fill in all fields.";
+                return;
+            }
+
+            if (pass != repass)
+            {
+                feedbackText.text = "Passwords do not match!";
+                return;
+            }
+
+            string filePath = Path.Combine(UserData, $"{user}.json");
+            if (File.Exists(filePath))
+            {
+                feedbackText.text = "Username already exists!";
+                return;
+            }
+
+            PlayerData newData = new PlayerData
+            {
+                username = user,
+                password = pass,
+                email = email,
+                score = 0,
+                wins = 0
+            };
+
+            string json = JsonUtility.ToJson(newData, true);
+            File.WriteAllText(filePath, json);
+
+            feedbackText.text = "Account registered!";
+            registerPanel.SetActive(false);
+            loginPanel.SetActive(true);
+        }
+
+        public void LoginAccount()
+        {
+            string user = loginUsernameInput.text.Trim();
+            string pass = loginPasswordInput.text.Trim();
+
+            string filePath = Path.Combine(UserData, $"{user}.json");
+            if (!File.Exists(filePath))
+            {
+                feedbackText.text = "No account found!";
+                return;
+            }
+
+            string json = File.ReadAllText(filePath);
+            PlayerData loaded = JsonUtility.FromJson<PlayerData>(json);
+
+            if (loaded.password != pass)
+            {
+                feedbackText.text = "Incorrect password!";
+                return;
+            }
+
+            feedbackText.text = "Login successful!";
+            currentPlayer = loaded;
+
+            HideAllPanels();
+            opponentNamePanel.SetActive(true);
+
+            // Display the logged-in username immediately
+            DisplayOpponentName(user);
+
+            // Send username to GameHandler if it exists
+            if (gameHandler != null)
+            {
+                gameHandler.SendUsernameToServer(user);
+                Debug.Log($"[LOGIN] Sending username to server: {user}");
+            }
+            else
+            {
+                Debug.LogWarning("[LOGIN] GameHandler not found!");
             }
         }
 
-        /// <summary>
-        /// Hides the selection UI after player makes a choice
-        /// </summary>
-        private void OnHideSelectionUI(HideSelectionUIEvent evt)
+        // ============================
+        // GAME UI EVENTS
+        // ============================
+
+        private void OnPlayerMadeSelection(PlayerMadeSelectionEvent evt)
         {
-            if (selectionUI != null)
-            {
-                selectionUI.SetActive(false);
-                Debug.Log("[UI] Hiding selection UI");
-            }
+            selectionPanel.SetActive(false);
         }
 
-        /// <summary>
-        /// Shows the appropriate result UI (win/lose/draw) based on the round outcome
-        /// Only shows UI for the local player
-        /// </summary>
-        private void OnShowResultUI(ShowResultUIEvent evt)
+        private void OnRoundEnded(RoundEndedEvent evt)
         {
-            // Only show result for local player
-            if (evt.TargetPlayer != NetworkRunner.GetRunnerForGameObject(gameObject)?.LocalPlayer)
-                return;
+            HideAllPanels();
 
-            // Hide all result UIs first
-            HideAllResultUIs();
-
-            // Show appropriate UI based on result
             if (evt.IsDraw)
             {
-                if (drawUI != null)
-                {
-                    drawUI.SetActive(true);
-                    Debug.Log("[UI] Showing draw UI");
-                }
+                drawPanel.SetActive(true);
             }
-            else if (evt.IsWin)
+            else if (evt.Winner == gameHandler.Runner.LocalPlayer)
             {
-                if (winUI != null)
-                {
-                    winUI.SetActive(true);
-                    Debug.Log("[UI] Showing win UI");
-                }
+                winPanel.SetActive(true);
+                UpdatePlayerStats(true);
             }
             else
             {
-                if (loseUI != null)
-                {
-                    loseUI.SetActive(true);
-                    Debug.Log("[UI] Showing lose UI");
-                }
+                losePanel.SetActive(true);
+                UpdatePlayerStats(false);
+            }
+
+            Invoke(nameof(ShowSelectionAgain), 3f);
+        }
+
+        private void ShowSelectionAgain()
+        {
+            HideAllPanels();
+            selectionPanel.SetActive(true);
+        }
+
+        public void UpdateAllPlayerNames(List<string> usernames)
+        {
+            if (allPlayersText == null) return;
+
+            if (usernames.Count == 0)
+            {
+                allPlayersText.text = "No players connected.";
+                return;
+            }
+
+            allPlayersText.text = "Players:\n";
+            foreach (var name in usernames)
+            {
+                allPlayersText.text += name + "\n";
             }
         }
 
-        /// <summary>
-        /// Hides all result UIs
-        /// </summary>
-        private void OnHideResultUI(HideResultUIEvent evt)
-        {
-            HideAllResultUIs();
-            Debug.Log("[UI] Hiding all result UIs");
-        }
+        // ============================
+        // SAVE/LOAD PLAYER DATA
+        // ============================
 
-        /// <summary>
-        /// Updates the round number display
-        /// </summary>
-        private void OnRoundStarted(RoundStartedEvent evt)
+        public void UpdatePlayerStats(bool won)
         {
-            if (roundNumberText != null)
+            if (currentPlayer == null) return;
+
+            if (won)
             {
-                roundNumberText.text = $"Round {evt.RoundNumber}";
-                Debug.Log($"[UI] Round {evt.RoundNumber} started");
-            }
-        }
-
-        /// <summary>
-        /// Updates the player count display when game starts
-        /// </summary>
-        private void OnGameStarted(GameStartedEvent evt)
-        {
-            if (playerCountText != null)
-            {
-                playerCountText.text = $"{evt.PlayerCount} Players";
-                Debug.Log($"[UI] Game started with {evt.PlayerCount} players");
-            }
-        }
-
-        /// <summary>
-        /// Updates player count when a player joins
-        /// </summary>
-        private void OnPlayerJoined(PlayerJoinedEvent evt)
-        {
-            UpdatePlayerCount();
-        }
-
-        /// <summary>
-        /// Updates player count when a player leaves
-        /// </summary>
-        private void OnPlayerLeft(PlayerLeftEvent evt)
-        {
-            UpdatePlayerCount();
-        }
-
-        /// <summary>
-        /// Updates the player count display
-        /// </summary>
-        private void UpdatePlayerCount()
-        {
-            if (playerCountText != null && GNW2.GameManager.GameManager.Instance != null)
-            {
-                int count = GNW2.GameManager.GameManager.Instance.activePlayers.Count;
-                playerCountText.text = $"{count} Player{(count != 1 ? "s" : "")}";
-            }
-        }
-
-        /// <summary>
-        /// Called when a player clicks a selection button (Rock/Paper/Scissors)
-        /// </summary>
-        private void OnSelectionButtonClicked(int selection)
-        {
-            // Find GameHandler and send selection to server
-            // Server will handle hiding UI via RPC when appropriate
-            if (GameHandler.Instance != null)
-            {
-                GameHandler.Instance.SendPlayerSelection(selection);
-                Debug.Log($"[UI] Player selected: {selection}");
+                currentPlayer.score += 1;
+                currentPlayer.wins += 1;
             }
             else
             {
-                Debug.LogError("[UI] GameHandler instance not found!");
+                currentPlayer.score = Mathf.Max(0, currentPlayer.score - 1);
             }
+
+            string filePath = Path.Combine(UserData, $"{currentPlayer.username}.json");
+            string json = JsonUtility.ToJson(currentPlayer, true);
+            File.WriteAllText(filePath, json);
         }
 
-        /// <summary>
-        /// Helper method to hide all result UIs
-        /// </summary>
-        private void HideAllResultUIs()
+        public void DisplayOpponentName(string opponent)
         {
-            if (winUI != null) winUI.SetActive(false);
-            if (loseUI != null) loseUI.SetActive(false);
-            if (drawUI != null) drawUI.SetActive(false);
-        }
-
-        /// <summary>
-        /// Hides all game UI elements (used when not connected to network)
-        /// </summary>
-        private void HideAllGameUI()
-        {
-            // Hide the root UI container if assigned
-            if (gameUIRoot != null)
-            {
-                gameUIRoot.SetActive(false);
-            }
-            else
-            {
-                // Otherwise hide individual elements
-                if (selectionUI != null) selectionUI.SetActive(false);
-                HideAllResultUIs();
-                if (roundNumberText != null) roundNumberText.gameObject.SetActive(false);
-                if (playerCountText != null) playerCountText.gameObject.SetActive(false);
-            }
-        }
-
-        /// <summary>
-        /// Shows all game UI elements (used when connected to network)
-        /// </summary>
-        private void ShowAllGameUI()
-        {
-            // Show the root UI container if assigned
-            if (gameUIRoot != null)
-            {
-                gameUIRoot.SetActive(true);
-            }
-            else
-            {
-                // Otherwise show individual elements (except selection/result UIs - those are controlled by game state)
-                if (roundNumberText != null) roundNumberText.gameObject.SetActive(true);
-                if (playerCountText != null) playerCountText.gameObject.SetActive(true);
-            }
+            opponentNameText.text = $"Player: {opponent}";
         }
     }
 }

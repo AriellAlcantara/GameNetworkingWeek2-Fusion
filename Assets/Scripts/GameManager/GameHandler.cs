@@ -1,147 +1,142 @@
-using UnityEngine;
 using Fusion;
-using GNW2.GameManager;
 using GNW2.Events;
+using GNW2.GameManager;
 using System.Collections.Generic;
+using UnityEngine;
 
-public class GameHandler : NetworkBehaviour
+namespace GNW2.UI
 {
-    public static GameHandler Instance;
-
-    private GameStateMachine _stateMachine;
-    private List<PlayerTurn> playerTurn = new();
-
-    struct PlayerTurn
+    public class GameHandler : NetworkBehaviour
     {
-        public PlayerRef player;
-        public int PlayerSelection;
+        public static GameHandler Instance;
+
+        private GameStateMachine _stateMachine;
+        private List<PlayerRef> players = new();
+        private PlayerRef currentPlayer;
+        private PlayerRef otherPlayer;
+        private System.Random random = new System.Random();
+        private Dictionary<PlayerRef, string> playerUsernames = new();
+
+        public override void Spawned()
+        {
+            base.Spawned();
+            if (Instance == null)
+            {
+                Instance = this;
+                DontDestroyOnLoad(gameObject);
+            }
+            else if (Instance != this)
+            {
+                Runner.Despawn(Object);
+                return;
+            }
+
+            _stateMachine = GetComponent<GameStateMachine>();
+            if (_stateMachine == null)
+                _stateMachine = gameObject.AddComponent<GameStateMachine>();
+
+            if (Object.HasStateAuthority)
+            {
+                _stateMachine.Initialize();
+                InitializeTurnOrder();
+            }
+        }
+
+        private void InitializeTurnOrder()
+        {
+            players.Clear();
+            foreach (var p in Runner.ActivePlayers)
+            {
+                players.Add(p);
+            }
+
+            if (players.Count >= 2)
+            {
+                currentPlayer = players[0];
+                otherPlayer = players[1];
+            }
+        }
+
+        [Rpc(RpcSources.All, RpcTargets.StateAuthority)]
+        public void RPC_SendUsernameToServer(string username, PlayerRef player)
+        {
+            if (!playerUsernames.ContainsKey(player))
+                playerUsernames.Add(player, username);
+            else
+                playerUsernames[player] = username;
+
+            // Update the UI with all current usernames
+            UpdateAllPlayerNamesUI();
+        }
+
+        private void UpdateAllPlayerNamesUI()
+        {
+            List<string> names = new List<string>(playerUsernames.Values);
+            if (GameUIManager.Instance != null)
+            {
+                GameUIManager.Instance.UpdateAllPlayerNames(names);
+            }
+        }
+
+        [Rpc(RpcSources.All, RpcTargets.StateAuthority)]
+        public void RPC_SendTurn(int type, PlayerRef player)
+        {
+            if (player != currentPlayer) return;
+            HandleTurn(player, type);
+        }
+
+        public void SendPlayerSelection(int selection)
+        {
+            if (Runner != null && Runner.LocalPlayer.IsRealPlayer)
+                RPC_SendTurn(selection, Runner.LocalPlayer);
+        }
+
+        private void HandleTurn(PlayerRef player, int choice)
+        {
+            bool poisoned = random.NextDouble() < 0.25;
+            Debug.Log($"[GameHandler] Player {player} chose {(choice == 0 ? "Drink" : "Make Other Drink")} | Poisoned: {poisoned}");
+
+            if (choice == 0)
+            {
+                if (poisoned) PlayerLose(player);
+            }
+            else if (choice == 1)
+            {
+                if (poisoned) PlayerLose(otherPlayer);
+                else SwapTurns();
+            }
+        }
+
+        private void SwapTurns()
+        {
+            var temp = currentPlayer;
+            currentPlayer = otherPlayer;
+            otherPlayer = temp;
+        }
+
+        private void PlayerLose(PlayerRef loser)
+        {
+            var winner = (loser == currentPlayer) ? otherPlayer : currentPlayer;
+            _stateMachine.RPC_ShowLoseUI(loser);
+            _stateMachine.RPC_ShowWinUI(winner);
+            RPC_BroadcastRoundEnded(winner, false);
+        }
+
+        [Rpc(RpcSources.StateAuthority, RpcTargets.All)]
+        private void RPC_BroadcastRoundEnded(PlayerRef winner, NetworkBool isDraw)
+        {
+            EventBus.Publish(new RoundEndedEvent
+            {
+                Winner = winner,
+                IsDraw = isDraw
+            });
+        }
+
+        public void SendUsernameToServer(string username)
+        {
+            if (Runner != null)
+                RPC_SendUsernameToServer(username, Runner.LocalPlayer);
+            Debug.Log($"[SERVER] Received username: {username}");
+        }
     }
-
-
-    public override void Spawned()
-    {
-        base.Spawned();
-        if (Instance == null)
-        {
-            Instance = this;
-            DontDestroyOnLoad(gameObject);
-        }
-        else if (Instance != this)
-        {
-            // Prevent multiple GameHandler instances
-            Runner.Despawn(Object);
-            return;
-        }
-
-        // Get or create state machine
-        _stateMachine = GetComponent<GameStateMachine>();
-        if (_stateMachine == null)
-        {
-            _stateMachine = gameObject.AddComponent<GameStateMachine>();
-        }
-
-        if (Object.HasStateAuthority)
-        {
-            _stateMachine.Initialize();
-        }
-    }
-
-    public override void FixedUpdateNetwork()
-    {
-        base.FixedUpdateNetwork();
-        // State machine handles game flow now
-    }
-
-    [Rpc(RpcSources.All, RpcTargets.StateAuthority)]
-    private void RPC_SendTurn(int type, PlayerRef player)
-    {
-        playerTurn.Add(new PlayerTurn
-        {
-            PlayerSelection = type,
-            player = player
-        });
-
-        // Publish selection event
-        RPC_BroadcastPlayerSelection(player, type);
-
-        // Update state machine
-        _stateMachine.PlayersReady++;
-
-        if(playerTurn.Count == 2)
-        {
-            Evaluate();
-        }
-    }
-
-    [Rpc(RpcSources.StateAuthority, RpcTargets.All)]
-    private void RPC_BroadcastPlayerSelection(PlayerRef player, int selection)
-    {
-        EventBus.Publish(new PlayerMadeSelectionEvent
-        {
-            Player = player,
-            Selection = selection
-        });
-    }
-
-
-    /// <summary>
-    /// Public method for UI to call when player makes a selection
-    /// </summary>
-    public void SendPlayerSelection(int selection)
-    {
-        if (Runner != null && Runner.LocalPlayer.IsRealPlayer)
-        {
-            RPC_SendTurn(selection, Runner.LocalPlayer);
-        }
-    }
-
-    private void Evaluate()
-    {
-        var p1result = playerTurn[0];
-        var p2result = playerTurn[1];
-
-        // Rock = 0, Paper = 1, Scissors = 2
-        // Rock beats Scissors, Scissors beats Paper, Paper beats Rock
-
-        if (p1result.PlayerSelection == p2result.PlayerSelection)
-        {
-            // Draw - show draw UI to all players
-            _stateMachine.RPC_ShowDrawUI();
-            RPC_BroadcastRoundEnded(PlayerRef.None, true);
-        }
-        else if ((p1result.PlayerSelection == 0 && p2result.PlayerSelection == 2) ||  // Rock beats Scissors
-                 (p1result.PlayerSelection == 1 && p2result.PlayerSelection == 0) ||  // Paper beats Rock
-                 (p1result.PlayerSelection == 2 && p2result.PlayerSelection == 1))    // Scissors beats Paper
-        {
-            // Player 1 wins - show win to p1, lose to p2
-            _stateMachine.RPC_ShowWinUI(p1result.player);
-            _stateMachine.RPC_ShowLoseUI(p2result.player);
-            RPC_BroadcastRoundEnded(p1result.player, false);
-        }
-        else
-        {
-            // Player 2 wins - show lose to p1, win to p2
-            _stateMachine.RPC_ShowLoseUI(p1result.player);
-            _stateMachine.RPC_ShowWinUI(p2result.player);
-            RPC_BroadcastRoundEnded(p2result.player, false);
-        }
-
-        // Transition to showing results state
-        _stateMachine.TransitionToState(GameState.ShowingResults);
-
-        // Reset for next round
-        playerTurn.Clear();
-    }
-
-    [Rpc(RpcSources.StateAuthority, RpcTargets.All)]
-    private void RPC_BroadcastRoundEnded(PlayerRef winner, NetworkBool isDraw)
-    {
-        EventBus.Publish(new RoundEndedEvent
-        {
-            Winner = winner,
-            IsDraw = isDraw
-        });
-    }
-
-
 }
